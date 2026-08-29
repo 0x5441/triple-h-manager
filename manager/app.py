@@ -4,7 +4,8 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from bot import HarajBot
-from storage import AccountStore
+from google_sheets import GoogleSheetStore
+from storage import AccountStore, SettingsStore
 
 
 class HarajManagerApp(tk.Tk):
@@ -14,6 +15,12 @@ class HarajManagerApp(tk.Tk):
         self.geometry("980x650")
         self.minsize(850, 560)
         self.store = AccountStore()
+        self.settings_store = SettingsStore()
+        self.settings = self.settings_store.load()
+        self.settings.setdefault("spreadsheet_url", "https://docs.google.com/spreadsheets/d/1hZvE6-M2Xxw20zvMI20-pDOD_LMApc4yJ7_ELKl8q7E/edit")
+        if not self.settings.get("worksheet") or self.settings.get("worksheet") == "Ads":
+            self.settings["worksheet"] = "إعلانات وايت حائل"
+        self.settings_store.save(self.settings)
         self.accounts = self.store.load()
         self.events = queue.Queue()
         self.running = False
@@ -30,6 +37,9 @@ class HarajManagerApp(tk.Tk):
         ttk.Label(top, text="مدير إعلانات حراج", font=("Arial", 18, "bold")).pack(side="right")
         self.headless_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="تشغيل بدون إظهار المتصفح", variable=self.headless_var).pack(side="left")
+        self.dry_run_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="تجربة بدون نشر", variable=self.dry_run_var).pack(side="left", padx=10)
+        ttk.Button(top, text="إعدادات Google Sheets", command=self._sheet_settings).pack(side="left")
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=12)
@@ -68,6 +78,10 @@ class HarajManagerApp(tk.Tk):
         self.start_all_button.pack(side="right", padx=3)
         self.start_one_button = ttk.Button(actions, text="تحديث الحساب المحدد", command=self._start_selected)
         self.start_one_button.pack(side="right", padx=3)
+        self.publish_all_button = ttk.Button(actions, text="نشر لجميع الحسابات", command=self._publish_all)
+        self.publish_all_button.pack(side="right", padx=12)
+        self.publish_one_button = ttk.Button(actions, text="نشر للحساب المحدد", command=self._publish_selected)
+        self.publish_one_button.pack(side="right", padx=3)
         self.status_label = ttk.Label(actions, text="جاهز")
         self.status_label.pack(side="left")
 
@@ -190,6 +204,114 @@ class HarajManagerApp(tk.Tk):
             return
         self._run(self.accounts.copy())
 
+    def _sheet_settings(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("إعدادات Google Sheets")
+        dialog.geometry("620x220")
+        dialog.transient(self)
+        dialog.grab_set()
+        fields = {}
+        ttk.Label(dialog, text="رابط Google Sheets العام").grid(row=0, column=2, padx=10, pady=12, sticky="e")
+        url_entry = ttk.Entry(dialog, width=55, justify="right")
+        url_entry.grid(row=0, column=0, columnspan=2, padx=10, pady=12)
+        url_entry.insert(0, self.settings.get("spreadsheet_url", ""))
+        fields["spreadsheet_url"] = url_entry
+
+        ttk.Label(dialog, text="تبويب الإعلانات").grid(row=1, column=2, padx=10, pady=12, sticky="e")
+        worksheet_combo = ttk.Combobox(dialog, width=42, justify="right", state="normal")
+        worksheet_combo.grid(row=1, column=1, padx=10, pady=12)
+        worksheet_combo.set(self.settings.get("worksheet", "إعلانات وايت حائل"))
+        fields["worksheet"] = worksheet_combo
+
+        def load_sheets():
+            try:
+                client = GoogleSheetStore(url_entry.get().strip(), worksheet_combo.get().strip())
+                names = client.sheet_names()
+                worksheet_combo.configure(values=names, state="readonly")
+                if worksheet_combo.get() not in names:
+                    worksheet_combo.set(names[0])
+            except Exception as exc:
+                messagebox.showerror("Google Sheets", str(exc), parent=dialog)
+
+        ttk.Button(dialog, text="جلب التبويبات", command=load_sheets).grid(row=1, column=0, padx=10, pady=12)
+        def save():
+            self.settings = {key: entry.get().strip() for key, entry in fields.items()}
+            if not self.settings["spreadsheet_url"]:
+                messagebox.showerror("ناقص", "أدخل رابط Google Sheets", parent=dialog)
+                return
+            self.settings_store.save(self.settings)
+            dialog.destroy()
+        ttk.Button(dialog, text="حفظ", command=save).grid(row=4, column=0, columnspan=3, pady=15)
+
+    def _sheet_client(self):
+        return GoogleSheetStore(
+            self.settings.get("spreadsheet_url", ""),
+            self.settings.get("worksheet", "إعلانات وايت حائل"),
+        )
+
+    def _publish_selected(self):
+        index = self._selected_index()
+        if index is None:
+            messagebox.showinfo("تنبيه", "اختر حسابًا أولًا")
+            return
+        self._run_publish([self.accounts[index]])
+
+    def _publish_all(self):
+        if not self.accounts:
+            messagebox.showinfo("تنبيه", "أضف حسابًا أولًا")
+            return
+        self._run_publish(self.accounts.copy())
+
+    def _run_publish(self, accounts):
+        if self.running:
+            return
+        if not self.settings.get("spreadsheet_url"):
+            messagebox.showerror("Google Sheets", "افتح إعدادات Google Sheets وأدخل البيانات أولًا")
+            return
+        self.running = True
+        self._set_running(True, "جاري قراءة Google Sheets...")
+        threading.Thread(target=self._publish_worker, args=(accounts, self.headless_var.get(), self.dry_run_var.get()), daemon=True).start()
+
+    def _publish_worker(self, accounts, headless, dry_run):
+        def emit(message): self.events.put(("log", message))
+        summary = {"success": 0, "failed": 0}
+        try:
+            sheet_store = self._sheet_client()
+            worksheet, rows = sheet_store.rows()
+            used = set()
+            for account in accounts:
+                wanted = str(account["name"]).strip().lower()
+                username = str(account["username"]).strip()
+                match = next((row for row in rows if row["_row"] not in used and str(row.get("account", "")).strip().lower() in (wanted, username)), None)
+                if match is None:
+                    match = next((row for row in rows if row["_row"] not in used and not str(row.get("account", "")).strip()), None)
+                if match is None:
+                    emit(f"تخطي {account['name']}: لا يوجد صف جاهز مخصص له")
+                    continue
+                used.add(match["_row"])
+                emit(f"بدء نشر صف {match['_row']} للحساب {account['name']}")
+                try:
+                    HarajBot(headless=headless, logger=emit).run_publish(account, match, dry_run=dry_run)
+                    summary["success"] += 1
+                    if not dry_run:
+                        sheet_store.mark(worksheet, match["_row"], "تم")
+                    emit("نجح ملء النموذج" if dry_run else "تم نشر الإعلان وتحديث حالة الصف")
+                except Exception as exc:
+                    summary["failed"] += 1
+                    if not dry_run:
+                        sheet_store.mark(worksheet, match["_row"], f"فشل: {str(exc)[:120]}")
+                    emit(f"فشل النشر: {exc}")
+        except Exception as exc:
+            summary["failed"] += len(accounts)
+            emit(f"فشل Google Sheets: {exc}")
+        self.events.put(("done", summary))
+
+    def _set_running(self, running, text):
+        state = "disabled" if running else "normal"
+        for button in (self.start_all_button, self.start_one_button, self.publish_all_button, self.publish_one_button):
+            button.configure(state=state)
+        self.status_label.configure(text=text)
+
     def _run(self, accounts):
         if self.running:
             return
@@ -197,9 +319,7 @@ class HarajManagerApp(tk.Tk):
         if empty and not messagebox.askyesno("حسابات بلا إعلانات", "بعض الحسابات لا تحتوي روابط وسيتم تخطيها. هل تريد المتابعة؟"):
             return
         self.running = True
-        self.start_all_button.configure(state="disabled")
-        self.start_one_button.configure(state="disabled")
-        self.status_label.configure(text="جاري التشغيل...")
+        self._set_running(True, "جاري التشغيل...")
         headless = self.headless_var.get()
         threading.Thread(target=self._worker, args=(accounts, headless), daemon=True).start()
 
@@ -231,10 +351,8 @@ class HarajManagerApp(tk.Tk):
                     self.log.configure(state="disabled")
                 elif kind == "done":
                     self.running = False
-                    self.start_all_button.configure(state="normal")
-                    self.start_one_button.configure(state="normal")
-                    self.status_label.configure(text=f"انتهى: {payload['success']} ناجح، {payload['failed']} فاشل")
-                    messagebox.showinfo("اكتمل التحديث", f"نجح: {payload['success']}\nفشل: {payload['failed']}")
+                    self._set_running(False, f"انتهى: {payload['success']} ناجح، {payload['failed']} فاشل")
+                    messagebox.showinfo("اكتملت العملية", f"نجح: {payload['success']}\nفشل: {payload['failed']}")
         except queue.Empty:
             pass
         self.after(150, self._read_events)

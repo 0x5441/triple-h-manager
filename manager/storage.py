@@ -39,3 +39,21 @@ class AccountStore:
         temporary = self.accounts_path.with_suffix(".tmp")
         temporary.write_bytes(self.cipher.encrypt(raw))
         temporary.replace(self.accounts_path)
+
+
+class SettingsStore:
+    def __init__(self):
+        self.path = Path(__file__).resolve().parent / "data" / "settings.json"
+
+    def load(self):
+        if not self.path.exists():
+            return {"credentials_file": "", "spreadsheet_id": "", "worksheet": "Ads"}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def save(self, settings):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
