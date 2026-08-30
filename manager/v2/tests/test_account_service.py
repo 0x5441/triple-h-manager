@@ -60,3 +60,16 @@ def test_service_pauses_and_activates_account(tmp_path: Path) -> None:
     assert paused.last_status is AccountStatus.PAUSED
     assert active.paused is False
     assert active.last_status is AccountStatus.IDLE
+
+
+def test_service_manages_unique_haraj_ad_links(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    account = service.add_account(name="حساب", username="0500000000", password="secret")
+
+    service.add_ad_url(account.id, "https://haraj.com.sa/example")
+    service.add_ad_url(account.id, "https://haraj.com.sa/example")
+    updated = service.add_ad_url(account.id, "https://haraj.com.sa/another")
+    reduced = service.remove_ad_indexes(account.id, [0])
+
+    assert updated.ads == ["https://haraj.com.sa/example", "https://haraj.com.sa/another"]
+    assert reduced.ads == ["https://haraj.com.sa/another"]

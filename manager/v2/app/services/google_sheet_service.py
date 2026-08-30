@@ -146,7 +146,7 @@ class GoogleSheetService:
 
         csv_url = (
             f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq"
-            f"?tqx=out:csv&sheet={quote(worksheet_name)}"
+            f"?tqx=out:csv&headers=1&sheet={quote(worksheet_name)}"
         )
         try:
             text = self._fetcher(csv_url).decode("utf-8-sig")

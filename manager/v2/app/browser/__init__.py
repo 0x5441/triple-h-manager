@@ -4,8 +4,11 @@ from app.browser.browser_factory import BrowserFactory, BrowserLaunchError, Prof
 from app.browser.haraj_page import (
     HarajPage,
     HarajPageError,
+    ImageUploadNotSupportedError,
     LoginFailedError,
     ManualVerificationTimeoutError,
+    PhoneVerificationError,
+    PublishVerificationError,
     UpdateVerificationError,
 )
 from app.browser.selectors import HarajSelectors
@@ -16,8 +19,11 @@ __all__ = [
     "HarajPage",
     "HarajPageError",
     "HarajSelectors",
+    "ImageUploadNotSupportedError",
     "LoginFailedError",
     "ManualVerificationTimeoutError",
     "ProfileInUseError",
+    "PhoneVerificationError",
+    "PublishVerificationError",
     "UpdateVerificationError",
 ]

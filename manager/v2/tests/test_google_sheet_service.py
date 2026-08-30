@@ -88,10 +88,12 @@ def test_reads_matches_and_filters_csv_rows(tmp_path: Path) -> None:
 حساب غير معروف,غير مطابق,نص,,,
 الحساب الأول,,نص ناقص,,,
 """
-    service = make_service(tmp_path, FakeSheetFetcher(csv_text))
+    fetcher = FakeSheetFetcher(csv_text)
+    service = make_service(tmp_path, fetcher)
 
     result = service.read_worksheet(SHEET_URL, "Ads", accounts())
 
+    assert "headers=1" in fetcher.urls[-1]
     assert [advertisement.account_id for advertisement in result.advertisements] == [
         "account-1",
         "account-2",

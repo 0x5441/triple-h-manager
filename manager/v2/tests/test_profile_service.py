@@ -66,3 +66,34 @@ def test_profile_service_reports_manual_verification_timeout_and_quits() -> None
     assert result.status is AccountStatus.MANUAL_VERIFICATION_REQUIRED
     assert result.success is False
     driver.quit.assert_called_once_with()
+
+
+def test_check_session_does_not_login_and_reports_expired() -> None:
+    driver = Mock()
+    browser_factory = Mock()
+    browser_factory.create.return_value = driver
+    page = Mock()
+    page.is_logged_in.return_value = False
+    service = ProfileService(browser_factory, page_factory=Mock(return_value=page))
+
+    result = service.check_session(make_account())
+
+    assert result.status is AccountStatus.SESSION_EXPIRED
+    page.open_home.assert_called_once_with()
+    page.ensure_logged_in.assert_not_called()
+    driver.quit.assert_called_once_with()
+
+
+def test_open_profile_is_owned_by_service_until_shutdown() -> None:
+    driver = Mock()
+    browser_factory = Mock()
+    browser_factory.create.return_value = driver
+    page = Mock()
+    service = ProfileService(browser_factory, page_factory=Mock(return_value=page))
+
+    result = service.open_profile(make_account())
+
+    assert result.success is True
+    driver.quit.assert_not_called()
+    service.close_open_profiles()
+    driver.quit.assert_called_once_with()

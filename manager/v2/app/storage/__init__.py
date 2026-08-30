@@ -8,6 +8,7 @@ from app.storage.account_store import (
     DuplicateAccountError,
 )
 from app.storage.processed_row_store import ProcessedRowStore, ProcessedRowStoreError
+from app.storage.settings_store import SettingsStore, SettingsStoreError
 
 __all__ = [
     "AccountNotFoundError",
@@ -17,4 +18,6 @@ __all__ = [
     "DuplicateAccountError",
     "ProcessedRowStore",
     "ProcessedRowStoreError",
+    "SettingsStore",
+    "SettingsStoreError",
 ]

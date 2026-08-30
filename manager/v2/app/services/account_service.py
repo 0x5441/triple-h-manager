@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
 from uuid import uuid4
+from urllib.parse import urlparse
 
 from app.models import Account, AccountStatus
 from app.storage import AccountStore
@@ -101,3 +102,20 @@ class AccountService:
             updated_at=timestamp,
         )
         return self._store.update_account(updated)
+
+    def add_ad_url(self, account_id: str, url: str) -> Account:
+        normalized = str(url).strip()
+        parsed = urlparse(normalized)
+        host = (parsed.hostname or "").casefold()
+        if parsed.scheme != "https" or not (host == "haraj.com.sa" or host.endswith(".haraj.com.sa")):
+            raise ValueError("رابط الإعلان يجب أن يكون رابط حراج HTTPS")
+        current = self._store.get_account(account_id)
+        if normalized in current.ads:
+            return current
+        return self.update_account(account_id, ads=[*current.ads, normalized])
+
+    def remove_ad_indexes(self, account_id: str, indexes: list[int]) -> Account:
+        current = self._store.get_account(account_id)
+        selected = set(indexes)
+        ads = [url for index, url in enumerate(current.ads) if index not in selected]
+        return self.update_account(account_id, ads=ads)

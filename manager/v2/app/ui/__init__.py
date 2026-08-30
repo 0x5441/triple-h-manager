@@ -1,2 +1,5 @@
-"""User-interface package reserved for future V2 phases."""
+"""Tkinter user-interface package."""
 
+from app.ui.main_window import MainWindow, UiServices
+
+__all__ = ["MainWindow", "UiServices"]

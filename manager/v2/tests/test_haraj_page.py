@@ -4,7 +4,7 @@ from selenium.common.exceptions import TimeoutException
 
 import pytest
 
-from app.browser import HarajPage, ManualVerificationTimeoutError, UpdateVerificationError
+from app.browser import HarajPage, HarajSelectors, ManualVerificationTimeoutError, UpdateVerificationError
 from app.models import Account, AccountStatus
 
 
@@ -35,6 +35,38 @@ def test_ensure_logged_in_refreshes_expired_session() -> None:
 
     assert status is AccountStatus.SESSION_REFRESHED
     page.login.assert_called_once_with(make_account(), manual_verification_timeout=90)
+
+
+def test_session_is_valid_when_add_post_is_ready_and_login_button_is_absent() -> None:
+    driver = Mock()
+    add_post = Mock()
+    add_post.is_displayed.return_value = True
+    driver.find_elements.side_effect = lambda by, value: (
+        [add_post] if (by, value) == HarajSelectors.ADD_POST_BUTTON else []
+    )
+    wait = Mock()
+    wait.until.side_effect = lambda predicate: predicate(driver)
+    page = HarajPage(driver, wait_factory=lambda _driver, _timeout: wait)
+
+    assert page.is_logged_in() is True
+
+
+def test_visible_login_button_takes_priority_over_add_post_button() -> None:
+    driver = Mock()
+    login = Mock()
+    login.is_displayed.return_value = True
+    add_post = Mock()
+    add_post.is_displayed.return_value = True
+    elements = {
+        HarajSelectors.LOGIN_LINK: [login],
+        HarajSelectors.ADD_POST_BUTTON: [add_post],
+    }
+    driver.find_elements.side_effect = lambda by, value: elements.get((by, value), [])
+    wait = Mock()
+    wait.until.side_effect = lambda predicate: predicate(driver)
+    page = HarajPage(driver, wait_factory=lambda _driver, _timeout: wait)
+
+    assert page.is_logged_in() is False
 
 
 def test_login_waits_for_visible_manual_verification() -> None:

@@ -10,7 +10,16 @@ from app.services.google_sheet_service import (
     SheetReadResult,
     WorksheetNotFoundError,
 )
+from app.services.job_runner import (
+    JobEvent,
+    JobEventType,
+    JobProgress,
+    JobRunner,
+    TaskOutcome,
+)
 from app.services.profile_service import ProfileResult, ProfileService
+from app.services.publish_service import PublishService
+from app.services.settings_service import SettingsService
 from app.services.update_service import UpdateService
 
 __all__ = [
@@ -19,10 +28,17 @@ __all__ = [
     "GoogleSheetError",
     "GoogleSheetService",
     "InvalidGoogleSheetUrlError",
+    "JobEvent",
+    "JobEventType",
+    "JobProgress",
+    "JobRunner",
     "MissingColumnsError",
     "ProfileResult",
     "ProfileService",
+    "PublishService",
     "SheetReadResult",
+    "SettingsService",
+    "TaskOutcome",
     "UpdateService",
     "WorksheetNotFoundError",
 ]

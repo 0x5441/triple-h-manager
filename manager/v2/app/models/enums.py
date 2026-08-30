@@ -12,6 +12,7 @@ class AccountStatus(str, Enum):
     FAILED = "failed"
     PAUSED = "paused"
     SESSION_VALID = "session_valid"
+    SESSION_EXPIRED = "session_expired"
     SESSION_REFRESHED = "session_refreshed"
     PROFILE_BUSY = "profile_busy"
     MANUAL_VERIFICATION_REQUIRED = "manual_verification_required"
