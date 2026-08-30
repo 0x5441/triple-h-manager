@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -21,14 +21,35 @@ class HarajBot:
         self.driver = None
         self.wait = None
 
-    def _open_browser(self):
+    def _open_browser(self, account):
+        # Use same profile path logic as create_profile.py / test_profile.py
+        try:
+            from create_profile import get_profile_path
+        except Exception:
+            # fallback: build safe numeric-only folder
+            def get_profile_path(username):
+                return (
+                    Path(__file__).resolve().parent
+                    / "data"
+                    / "profiles"
+                    / "".join(c for c in str(username) if c.isdigit())
+                )
+
+        profile_dir = get_profile_path(account.get("username", ""))
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
         options = webdriver.ChromeOptions()
+        options.add_argument(f"--user-data-dir={profile_dir.resolve()}")
+        options.add_argument("--profile-directory=Default")
         options.add_argument("--start-maximized")
         options.add_argument("--disable-notifications")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
         options.add_argument("--lang=ar")
         if self.headless:
             options.add_argument("--headless=new")
             options.add_argument("--window-size=1440,1000")
+
         self.driver = webdriver.Chrome(options=options)
         self.wait = WebDriverWait(self.driver, 25)
 
@@ -75,6 +96,87 @@ class HarajBot:
         except TimeoutException as exc:
             raise RuntimeError("لم ينجح تسجيل الدخول أو ظهرت خطوة تحقق إضافية") from exc
         self.log("تم تسجيل الدخول")
+
+    def ensure_login(self, account):
+        """Ensure the profile has an active session. If not, perform login.
+
+        Returns True on success, raises on failure.
+        """
+        try:
+            self.driver.get(self.BASE_URL)
+        except WebDriverException as exc:
+            raise RuntimeError("فشل فتح نافذة المتصفح أو أنها أغلقت مبكرًا") from exc
+        # quick check if already logged in
+        try:
+            WebDriverWait(self.driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="user-menu"]'))
+            )
+            self.log("الجلسة محفوظة وصالحة، تم تجاوز تسجيل الدخول")
+            return True
+        except TimeoutException:
+            pass
+
+        # not logged in yet — attempt normal login
+        username = account.get("username")
+        password = account.get("password")
+        if not username or not password:
+            raise RuntimeError("بيانات الدخول ناقصة للبروفايل")
+
+        try:
+            self.login(username, password)
+        except WebDriverException as exc:
+            raise RuntimeError("خطأ في المتصفح أثناء محاولة تسجيل الدخول") from exc
+        except Exception:
+            raise
+
+        # after login attempt, ensure user-menu appears (allow manual verification)
+        try:
+            WebDriverWait(self.driver, 120).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="user-menu"]'))
+            )
+            self.log("الجلسة محفوظة وصالحة، تم تجاوز تسجيل الدخول")
+            return True
+        except TimeoutException:
+            # allow user to complete verification manually if not headless
+            if self.headless:
+                raise RuntimeError("التحقق الإضافي لم يتم خلال المهلة (وعدم إمكانية التفاعل في الوضع الصامت)")
+            # give user extra time to complete manual verification
+            self.log("يرجى إكمال أي تحقق يدوي في المتصفح المفتوح. الانتظار لمدة 5 دقائق...")
+            try:
+                WebDriverWait(self.driver, 300).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="user-menu"]'))
+                )
+                self.log("الجلسة محفوظة وصالحة، تم تجاوز تسجيل الدخول")
+                return True
+            except TimeoutException:
+                raise RuntimeError("لم يتم التأكد من نجاح تسجيل الدخول بعد انتظار التحقق اليدوي")
+        except WebDriverException as exc:
+            raise RuntimeError("نافذة المتصفح أغلقت أو حدث خطأ في WebDriver أثناء التأكد من الجلسة") from exc
+
+    def refresh_profile_session(self, account):
+        """Open profile, ensure login, and return structured result."""
+        try:
+            self._open_browser(account)
+        except Exception as exc:
+            msg = str(exc)
+            if "user data directory is already in use" in msg.lower():
+                return {"success": False, "message": "خطأ: بروفايل الحساب مفتوح بالفعل في متصفح آخر"}
+            return {"success": False, "message": f"فشل فتح المتصفح: {msg}"}
+
+        try:
+            try:
+                ok = self.ensure_login(account)
+            except Exception as exc:
+                return {"success": False, "message": str(exc)}
+            if ok:
+                return {"success": True, "message": "تم تجديد الجلسة بنجاح"}
+            return {"success": False, "message": "فشل التأكد من الجلسة"}
+        finally:
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
 
     def _fill_phone_field(self, phone):
         selector = '[data-testid="step-five-mobile-input"]'
@@ -174,8 +276,8 @@ class HarajBot:
     def run_account(self, account):
         result = {"success": 0, "failed": 0}
         try:
-            self._open_browser()
-            self.login(account["username"], account["password"])
+            self._open_browser(account)
+            self.ensure_login(account)
             for number, url in enumerate(account["ads"], start=1):
                 try:
                     self.log(f"تحديث الإعلان {number}/{len(account['ads'])}")
@@ -196,8 +298,8 @@ class HarajBot:
 
     def run_publish(self, account, ad, dry_run=False):
         try:
-            self._open_browser()
-            self.login(account["username"], account["password"])
+            self._open_browser(account)
+            self.ensure_login(account)
             self.publish_ad(ad, dry_run=dry_run)
             return {"success": 1, "failed": 0}
         except Exception:

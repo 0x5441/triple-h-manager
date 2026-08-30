@@ -2,6 +2,7 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+from datetime import datetime
 
 from bot import HarajBot
 from google_sheets import GoogleSheetStore
@@ -22,6 +23,11 @@ class HarajManagerApp(tk.Tk):
             self.settings["worksheet"] = "إعلانات وايت حائل"
         self.settings_store.save(self.settings)
         self.accounts = self.store.load()
+        # support older accounts: ensure new fields exist
+        for acc in self.accounts:
+            acc.setdefault("paused", False)
+            acc.setdefault("last_status", "لم يعمل بعد")
+            acc.setdefault("last_run_at", "")
         self.events = queue.Queue()
         self.running = False
         self._build_ui()
@@ -49,13 +55,22 @@ class HarajManagerApp(tk.Tk):
         body.add(accounts_box, weight=2)
         body.add(ads_box, weight=3)
 
-        self.account_tree = ttk.Treeview(accounts_box, columns=("name", "username", "ads"), show="headings", height=15)
+        self.account_tree = ttk.Treeview(
+            accounts_box,
+            columns=("name", "username", "ads", "status", "last_run"),
+            show="headings",
+            height=15,
+        )
         self.account_tree.heading("name", text="اسم الحساب")
         self.account_tree.heading("username", text="رقم الجوال")
         self.account_tree.heading("ads", text="الإعلانات")
-        self.account_tree.column("name", width=130, anchor="center")
-        self.account_tree.column("username", width=130, anchor="center")
-        self.account_tree.column("ads", width=70, anchor="center")
+        self.account_tree.heading("status", text="الحالة")
+        self.account_tree.heading("last_run", text="آخر تشغيل")
+        self.account_tree.column("name", width=120, anchor="center")
+        self.account_tree.column("username", width=120, anchor="center")
+        self.account_tree.column("ads", width=60, anchor="center")
+        self.account_tree.column("status", width=160, anchor="center")
+        self.account_tree.column("last_run", width=130, anchor="center")
         self.account_tree.pack(fill="both", expand=True)
         self.account_tree.bind("<<TreeviewSelect>>", lambda _e: self._refresh_ads())
 
@@ -64,6 +79,8 @@ class HarajManagerApp(tk.Tk):
         ttk.Button(account_buttons, text="إضافة", command=self._add_account).pack(side="right", padx=2)
         ttk.Button(account_buttons, text="تعديل", command=self._edit_account).pack(side="right", padx=2)
         ttk.Button(account_buttons, text="حذف", command=self._delete_account).pack(side="right", padx=2)
+        ttk.Button(account_buttons, text="إيقاف الحساب مؤقتًا", command=self._toggle_pause).pack(side="right", padx=6)
+        ttk.Button(account_buttons, text="تجديد جلسة الحساب", command=self._refresh_selected).pack(side="right", padx=6)
 
         self.ads_list = tk.Listbox(ads_box, font=("Arial", 11), selectmode="extended")
         self.ads_list.pack(fill="both", expand=True)
@@ -97,7 +114,19 @@ class HarajManagerApp(tk.Tk):
     def _refresh_accounts(self):
         self.account_tree.delete(*self.account_tree.get_children())
         for index, account in enumerate(self.accounts):
-            self.account_tree.insert("", "end", iid=str(index), values=(account["name"], account["username"], len(account["ads"])))
+            account.setdefault("paused", False)
+            account.setdefault("last_status", "لم يعمل بعد")
+            account.setdefault("last_run_at", "")
+            status = account.get("last_status", "لم يعمل بعد")
+            # if paused override status display
+            if account.get("paused"):
+                status = "متوقف مؤقتًا"
+            self.account_tree.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(account["name"], account["username"], len(account["ads"]), status, account.get("last_run_at", "")),
+            )
         self._refresh_ads()
 
     def _refresh_ads(self):
@@ -184,6 +213,47 @@ class HarajManagerApp(tk.Tk):
             self.accounts[index]["ads"].pop(ad_index)
         self._save_refresh(select=index)
 
+    def _toggle_pause(self):
+        index = self._selected_index()
+        if index is None:
+            messagebox.showinfo("تنبيه", "اختر حسابًا أولًا")
+            return
+        account = self.accounts[index]
+        account["paused"] = not account.get("paused", False)
+        state = "تم إيقاف الحساب مؤقتًا" if account["paused"] else "تم تفعيل الحساب"
+        account["last_status"] = "متوقف مؤقتًا" if account["paused"] else account.get("last_status", "لم يعمل بعد")
+        self.store.save(self.accounts)
+        self._refresh_accounts()
+        self.events.put(("log", f"{state}: {account['name']}"))
+
+    def _refresh_selected(self):
+        index = self._selected_index()
+        if index is None:
+            messagebox.showinfo("تنبيه", "اختر حسابًا أولًا")
+            return
+        account = self.accounts[index]
+
+        def worker():
+            def emit(msg): self.events.put(("log", msg))
+            emit(f"بدء تجديد الجلسة للحساب {account['name']}")
+            bot = HarajBot(headless=self.headless_var.get(), logger=emit)
+            result = bot.refresh_profile_session(account)
+            # update account state
+            if result.get("success"):
+                account["last_status"] = "تم تجديد الجلسة"
+            else:
+                account["last_status"] = f"فشل: {result.get('message', 'خطأ')}"
+            account["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            self.store.save(self.accounts)
+            self.events.put(("account_update", index))
+            emit(result.get("message", "انتهى"))
+            # re-enable buttons
+            self.events.put(("refresh_complete", None))
+
+        # disable running buttons while refreshing
+        self._set_running(True, f"جاري تجديد الجلسة: {account['name']}")
+        threading.Thread(target=worker, daemon=True).start()
+
     def _save_refresh(self, select=None):
         self.store.save(self.accounts)
         self._refresh_accounts()
@@ -195,6 +265,9 @@ class HarajManagerApp(tk.Tk):
         index = self._selected_index()
         if index is None:
             messagebox.showinfo("تنبيه", "اختر حسابًا أولًا")
+            return
+        if self.accounts[index].get("paused"):
+            messagebox.showinfo("تنبيه", "الحساب متوقف مؤقتًا")
             return
         self._run([self.accounts[index]])
 
@@ -254,6 +327,9 @@ class HarajManagerApp(tk.Tk):
         if index is None:
             messagebox.showinfo("تنبيه", "اختر حسابًا أولًا")
             return
+        if self.accounts[index].get("paused"):
+            messagebox.showinfo("تنبيه", "الحساب متوقف مؤقتًا")
+            return
         self._run_publish([self.accounts[index]])
 
     def _publish_all(self):
@@ -277,30 +353,62 @@ class HarajManagerApp(tk.Tk):
         summary = {"success": 0, "failed": 0}
         try:
             sheet_store = self._sheet_client()
-            worksheet, rows = sheet_store.rows()
+            worksheet, rows, headers = sheet_store.rows()
+            emit(f"الشيت جُمِع: تبويب='{worksheet}', عدد الصفوف المَعلقة={len(rows)}, عناوين الأعمدة={headers}")
+            # show up to 3 sample rows for diagnosis
+            for sample in rows[:3]:
+                emit(f"مثال صف {sample.get('_row')}: account='{sample.get('account')}', phone='{sample.get('phone')}'")
             used = set()
             for account in accounts:
-                wanted = str(account["name"]).strip().lower()
-                username = str(account["username"]).strip()
-                match = next((row for row in rows if row["_row"] not in used and str(row.get("account", "")).strip().lower() in (wanted, username)), None)
-                if match is None:
-                    match = next((row for row in rows if row["_row"] not in used and not str(row.get("account", "")).strip()), None)
-                if match is None:
-                    emit(f"تخطي {account['name']}: لا يوجد صف جاهز مخصص له")
-                    continue
-                used.add(match["_row"])
-                emit(f"بدء نشر صف {match['_row']} للحساب {account['name']}")
-                try:
-                    HarajBot(headless=headless, logger=emit).run_publish(account, match, dry_run=dry_run)
-                    summary["success"] += 1
-                    if not dry_run:
-                        sheet_store.mark(worksheet, match["_row"], "تم")
-                    emit("نجح ملء النموذج" if dry_run else "تم نشر الإعلان وتحديث حالة الصف")
-                except Exception as exc:
-                    summary["failed"] += 1
-                    if not dry_run:
-                        sheet_store.mark(worksheet, match["_row"], f"فشل: {str(exc)[:120]}")
-                    emit(f"فشل النشر: {exc}")
+                        # skip paused accounts
+                        if account.get("paused"):
+                            emit(f"تم تخطي الحساب {account['name']}: الحساب متوقف مؤقتًا")
+                            continue
+                        # mark running
+                        account["last_status"] = "قيد التشغيل"
+                        account["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        self.store.save(self.accounts)
+                        self.events.put(("account_update", self.accounts.index(account)))
+                        wanted = str(account["name"]).strip().lower()
+                        username = str(account["username"]).strip()
+                        clean = lambda s: "".join(ch for ch in str(s) if ch.isdigit())
+                        username_digits = clean(username)
+                        def row_matches(r):
+                            acc_val = str(r.get("account", "")).strip()
+                            if not acc_val:
+                                return False
+                            acc_norm = acc_val.strip().lower()
+                            if acc_norm in (wanted, username):
+                                return True
+                            if clean(acc_val) and username_digits and clean(acc_val) == username_digits:
+                                return True
+                            return False
+
+                        match = next((row for row in rows if row["_row"] not in used and row_matches(row)), None)
+                        if match is None:
+                            match = next((row for row in rows if row["_row"] not in used and not str(row.get("account", "")).strip()), None)
+                        if match is None:
+                            emit(f"تخطي {account['name']}: لا يوجد صف جاهز مخصص له")
+                            continue
+                        used.add(match["_row"])
+                        emit(f"بدء نشر صف {match['_row']} للحساب {account['name']}")
+                        try:
+                            HarajBot(headless=headless, logger=emit).run_publish(account, match, dry_run=dry_run)
+                            summary["success"] += 1
+                            account["last_status"] = "نجح"
+                            if not dry_run:
+                                sheet_store.mark(worksheet, match["_row"], "تم")
+                            emit("نجح ملء النموذج" if dry_run else "تم نشر الإعلان وتحديث حالة الصف")
+                        except Exception as exc:
+                            summary["failed"] += 1
+                            account["last_status"] = f"فشل: {str(exc)[:120]}"
+                            if not dry_run:
+                                sheet_store.mark(worksheet, match["_row"], f"فشل: {str(exc)[:120]}")
+                            emit(f"فشل النشر: {exc}")
+                        finally:
+                            account["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            self.store.save(self.accounts)
+                            self.events.put(("account_update", self.accounts.index(account)))
         except Exception as exc:
             summary["failed"] += len(accounts)
             emit(f"فشل Google Sheets: {exc}")
@@ -330,14 +438,28 @@ class HarajManagerApp(tk.Tk):
             if not account["ads"]:
                 emit(f"تخطي {account['name']}: لا توجد روابط")
                 continue
+            if account.get("paused"):
+                emit(f"تم تخطي الحساب {account['name']}: الحساب متوقف مؤقتًا")
+                continue
             emit(f"بدء الحساب: {account['name']}")
+            # mark running
+            account["last_status"] = "قيد التشغيل"
+            account["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            self.store.save(self.accounts)
+            self.events.put(("account_update", self.accounts.index(account)))
             try:
                 result = HarajBot(headless=headless, logger=emit).run_account(account)
                 summary["success"] += result["success"]
                 summary["failed"] += result["failed"]
+                account["last_status"] = "نجح"
             except Exception as exc:
                 summary["failed"] += len(account["ads"])
+                account["last_status"] = f"فشل: {exc}"
                 emit(f"فشل الحساب {account['name']}: {exc}")
+            finally:
+                account["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                self.store.save(self.accounts)
+                self.events.put(("account_update", self.accounts.index(account)))
         self.events.put(("done", summary))
 
     def _read_events(self):
@@ -353,6 +475,16 @@ class HarajManagerApp(tk.Tk):
                     self.running = False
                     self._set_running(False, f"انتهى: {payload['success']} ناجح، {payload['failed']} فاشل")
                     messagebox.showinfo("اكتملت العملية", f"نجح: {payload['success']}\nفشل: {payload['failed']}")
+                elif kind == "account_update":
+                    # payload is index
+                    try:
+                        idx = int(payload)
+                        self._refresh_accounts()
+                    except Exception:
+                        self._refresh_accounts()
+                elif kind == "refresh_complete":
+                    self.running = False
+                    self._set_running(False, "جاهز")
         except queue.Empty:
             pass
         self.after(150, self._read_events)

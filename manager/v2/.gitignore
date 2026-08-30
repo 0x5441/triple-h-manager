@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Runtime data and credentials
+!data/
+/data/*
+!data/.gitkeep
+*.enc
+*.key
+.env
+credentials.json
+cookies.json
+
+# Browser profiles, logs, and generated diagnostics
+profiles/
+logs/
+errors/
+*.log
+*.png
+*.jpg
+*.jpeg
+*.webp

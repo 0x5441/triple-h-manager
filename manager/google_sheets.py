@@ -30,6 +30,11 @@ class GoogleSheetStore:
     def _published(self):
         if not self.state_file.exists():
             return set()
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+            return set(data if isinstance(data, list) else [])
+        except (json.JSONDecodeError, OSError):
+            return set()
 
     def sheet_names(self):
         url = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}/export?format=xlsx"
@@ -75,6 +80,29 @@ class GoogleSheetStore:
         rows = []
         for row_number, values in enumerate(reader, start=2):
             normalized = {str(key).strip().lower(): value for key, value in values.items()}
+            # normalize common alternative headers so matching uses 'account' and 'phone'
+            account_candidates = [
+                "account",
+                "الحساب",
+                "اسم الحساب",
+                "account name",
+                "username",
+                "رقم الجوال",
+                "phone",
+                "phone number",
+                "phone_number",
+            ]
+            phone_candidates = ["phone", "رقم الجوال", "mobile", "الهاتف"]
+            if not normalized.get("account"):
+                for cand in account_candidates:
+                    if normalized.get(cand):
+                        normalized["account"] = normalized.get(cand)
+                        break
+            if not normalized.get("phone"):
+                for cand in phone_candidates:
+                    if normalized.get(cand):
+                        normalized["phone"] = normalized.get(cand)
+                        break
             normalized.setdefault("phone", "966592099662")
             normalized.setdefault("image", "")
             normalized.setdefault("status", "")
@@ -84,7 +112,7 @@ class GoogleSheetStore:
             status = str(normalized.get("status", "")).strip().lower()
             if row_key not in published and status not in ("تم", "published", "done"):
                 rows.append(normalized)
-        return None, rows
+        return self.worksheet_name, rows, headers
 
     def mark(self, _worksheet, row_number, _status):
         published = self._published()
